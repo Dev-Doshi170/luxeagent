@@ -16,32 +16,28 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { pipeline } from "@xenova/transformers";
 import { expandQuery } from "@/lib/queryExpansion";
 import type { Product } from "@/types/product";
 
-type FeatureExtractor = (
-  text: string,
-  options: { pooling: "mean"; normalize: boolean },
-) => Promise<{ data: Float32Array }>;
-
-let embedder: FeatureExtractor | null = null;
-
-async function getEmbedder(): Promise<FeatureExtractor> {
-  if (!embedder) {
-    embedder = (await pipeline(
-      "feature-extraction",
-      "Xenova/all-MiniLM-L6-v2",
-    )) as FeatureExtractor;
-  }
-  return embedder;
-}
-
-/** Embed text into a 384-dim MiniLM vector (mean-pooled + normalized). */
 export async function getEmbedding(text: string): Promise<number[]> {
-  const extractor = await getEmbedder();
-  const output = await extractor(text, { pooling: "mean", normalize: true });
-  return Array.from(output.data as Float32Array);
+  const response = await fetch(
+    "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ inputs: text, options: { wait_for_model: true } }),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`HuggingFace embedding failed: ${response.statusText}`);
+  }
+  const data = await response.json();
+  // HF returns number[][] for batch or number[] for single input
+  const vector = Array.isArray(data[0]) ? data[0] : data;
+  return vector as number[];
 }
 
 /** Create a service-role Supabase client for server-side search. */
