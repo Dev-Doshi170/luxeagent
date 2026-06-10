@@ -19,25 +19,34 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { expandQuery } from "@/lib/queryExpansion";
 import type { Product } from "@/types/product";
 
+/**
+ * Embed a query with Voyage AI (`voyage-3-lite`, 512 dims).
+ *
+ * The returned vector is compared against the `text_embedding` column in
+ * Supabase, so the catalog MUST be embedded with the *same* model. Mixing
+ * models (or truncating one model's output to another's dimension) silently
+ * produces garbage similarity scores, since embeddings only live in a shared
+ * space when they come from the same model. The corpus is re-embedded with
+ * `voyage-3-lite` via `scripts/reembed_voyage.py`; do NOT truncate here.
+ */
 export async function getEmbedding(text: string): Promise<number[]> {
-  const response = await fetch(
-    "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ inputs: text, options: { wait_for_model: true } }),
-    }
-  );
+  const response = await fetch("https://api.voyageai.com/v1/embeddings", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      input: [text],
+      model: "voyage-3-lite",
+    }),
+  });
   if (!response.ok) {
-    throw new Error(`HuggingFace embedding failed: ${response.statusText}`);
+    const err = await response.text();
+    throw new Error(`Voyage embedding failed: ${err}`);
   }
   const data = await response.json();
-  // HF returns number[][] for batch or number[] for single input
-  const vector = Array.isArray(data[0]) ? data[0] : data;
-  return vector as number[];
+  return data.data[0].embedding as number[];
 }
 
 /** Create a service-role Supabase client for server-side search. */
