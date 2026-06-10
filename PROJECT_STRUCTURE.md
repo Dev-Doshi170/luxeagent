@@ -392,4 +392,4 @@ These are required to run locally but are **not core source**:
 1. `backend/search.py` builds FAISS + BM25 indexes from the parquet and adds cross-encoder
    reranking.
 2. `backend/api.py` can serve this directly for testing.
-3. `generate_eval_dataset.py` → `evaluation.py` measure Recall@10/Recall@20/MRR to track quality.
+3. `generate_eval_dataset.py` → `evaluation.py` measure Recall@10/Recall@20/MRR to track quality
