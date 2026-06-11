@@ -17,6 +17,7 @@
  */
 
 import type { Product } from "../types/product.ts";
+import { mapIntentGender } from "./hybrid-search";
 import {
   classifyArticleType,
   type RankedProduct,
@@ -276,7 +277,8 @@ export function refineCandidates(
   products: RankedProduct[],
   intent?: QueryIntent,
 ): RefinedCandidates {
-  const gender = inferDominantGender(products);
+  const explicitGender = intent?.gender ? mapIntentGender(intent.gender) : undefined;
+  const gender = explicitGender ?? inferDominantGender(products);
   const genderScoped = gender
     ? products.filter((p) => p.gender === gender)
     : products;
