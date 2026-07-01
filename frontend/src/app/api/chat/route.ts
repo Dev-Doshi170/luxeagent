@@ -13,6 +13,7 @@ async function searchProducts(
   topK: number = 8,
   gender?: string,
   articleType?: string,
+  headers?: Record<string, string>,
 ): Promise<Product[]> {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL 
     || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3002");
@@ -20,9 +21,14 @@ async function searchProducts(
   if (gender) params.set("gender", gender);
   if (articleType) params.set("article_type", articleType);
   
-  const res = await fetch(`${baseUrl}/api/search?${params}`);
+  const res = await fetch(`${baseUrl}/api/search?${params}`, { headers });
   if (!res.ok) {
-    throw new Error(`Catalog search failed: ${res.statusText}`);
+    throw new Error(`Catalog search failed: ${res.status} ${res.statusText}`);
+  }
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await res.text();
+    throw new Error(`Expected JSON response but got "${contentType}". Body: ${text.slice(0, 250)}`);
   }
   const data = await res.json();
   return data.products || [];
@@ -49,6 +55,21 @@ function formatProductsForModel(products: Product[]) {
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
+
+  // Forward authorization/cookie headers for internal fetches to bypass Vercel's preview protection if enabled.
+  const headers: Record<string, string> = {};
+  const forwardHeaders = [
+    "cookie",
+    "authorization",
+    "x-vercel-protection-bypass",
+    "x-vercel-set-bypass-cookie",
+  ];
+  for (const name of forwardHeaders) {
+    const val = req.headers.get(name);
+    if (val) {
+      headers[name] = val;
+    }
+  }
 
   // Map Gemini API Key to standard Google environment variable
   if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
@@ -93,7 +114,7 @@ Rules:
           article_type: z.string().optional().describe("e.g. Shirts, Jeans, Dresses, Heels"),
         }),
         execute: async ({ query, top_k, gender, article_type }) => {
-          const products = await searchProducts(query, top_k, gender, article_type);
+          const products = await searchProducts(query, top_k, gender, article_type, headers);
           return { products, count: products.length };
         },
         toModelOutput: ({ output }) => ({
