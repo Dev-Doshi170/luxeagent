@@ -74,28 +74,30 @@ export function ExperienceShell({
               {subtitle}
             </p>
 
-            <nav
-              aria-label="Experience mode"
-              className="mt-8 inline-flex rounded-full border border-white/10 bg-white/[0.05] p-1 backdrop-blur"
-            >
-              {MODES.map((mode) => {
-                const isActive = mode.id === currentMode;
-                return (
-                  <Link
-                    key={mode.id}
-                    href={mode.href}
-                    aria-current={isActive ? "page" : undefined}
-                    className={`rounded-full px-5 py-3 text-sm font-semibold uppercase tracking-[0.22em] transition ${
-                      isActive
-                        ? "bg-[#C9A84C] text-[#070A12]"
-                        : "text-white/55 hover:text-white"
-                    }`}
-                  >
-                    {mode.label}
-                  </Link>
-                );
-              })}
-            </nav>
+            {MODES.filter((mode) => mode.id !== "product-search").length > 1 && (
+              <nav
+                aria-label="Experience mode"
+                className="mt-8 inline-flex rounded-full border border-white/10 bg-white/[0.05] p-1 backdrop-blur"
+              >
+                {MODES.filter((mode) => mode.id !== "product-search").map((mode) => {
+                  const isActive = mode.id === currentMode;
+                  return (
+                    <Link
+                      key={mode.id}
+                      href={mode.href}
+                      aria-current={isActive ? "page" : undefined}
+                      className={`rounded-full px-5 py-3 text-sm font-semibold uppercase tracking-[0.22em] transition ${
+                        isActive
+                          ? "bg-[#C9A84C] text-[#070A12]"
+                          : "text-white/55 hover:text-white"
+                      }`}
+                    >
+                      {mode.label}
+                    </Link>
+                  );
+                })}
+              </nav>
+            )}
           </section>
 
           {children}
