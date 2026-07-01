@@ -1,4 +1,4 @@
-import { google } from "@ai-sdk/google";
+import { groq } from "@ai-sdk/groq";
 import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
 import { getChatStepToolPolicy } from "@/lib/chatToolPolicy";
@@ -71,21 +71,8 @@ export async function POST(req: Request) {
     }
   }
 
-  // Map Gemini API Key to standard Google environment variable
-  if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
-  }
-
-  // Create Google model and wrap it in a proxy to resolve version mismatch with older Vercel AI SDK core
-  const rawModel = google("gemini-2.5-flash");
-  const model = new Proxy(rawModel, {
-    get(target, prop) {
-      if (prop === "specificationVersion") {
-        return "v3";
-      }
-      return Reflect.get(target, prop);
-    },
-  });
+  // Create Groq model
+  const model = groq("llama-3.3-70b-versatile");
 
   const result = streamText({
     model: model as any,
