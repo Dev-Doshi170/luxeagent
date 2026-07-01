@@ -71,6 +71,14 @@ export async function POST(req: Request) {
     }
   }
 
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY is not set in your Vercel Environment Variables. Please add it and redeploy.");
+  }
+  if (apiKey.includes("...")) {
+    throw new Error("Invalid GROQ_API_KEY: It looks like the masked key (containing '...') was copied from the Groq console. Please generate a new key and copy the full key immediately upon creation.");
+  }
+
   // Create Groq model
   const model = groq("llama-3.3-70b-versatile");
 
