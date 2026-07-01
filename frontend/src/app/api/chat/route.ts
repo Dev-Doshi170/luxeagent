@@ -14,7 +14,8 @@ async function searchProducts(
   gender?: string,
   articleType?: string,
 ): Promise<Product[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL 
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3002");
   const params = new URLSearchParams({ q: query, top_k: String(topK) });
   if (gender) params.set("gender", gender);
   if (articleType) params.set("article_type", articleType);
