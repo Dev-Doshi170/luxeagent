@@ -16,8 +16,8 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { expandQuery } from "@/lib/queryExpansion";
-import type { Product } from "@/types/product";
+import { expandQuery } from "./queryExpansion.ts";
+import type { Product } from "../types/product.ts";
 
 /**
  * Embed a query with Voyage AI (`voyage-3-lite`, 512 dims).
@@ -88,16 +88,61 @@ export async function runHybridSearch(
   const expanded = expandQuery(term);
   const embedding = await getEmbedding(expanded);
 
-  const { data, error } = await supabase.rpc("hybrid_search", {
-    query_embedding: `[${embedding.join(",")}]`,
-    query_text: expanded,
-    match_count: topK,
-    filter_gender: filters.gender ?? undefined,
-    filter_article_type: filters.articleType ?? undefined,
-    filter_colour: filters.colour ?? undefined,
-    filter_brand_tier: filters.brandTier ?? undefined,
-  });
+  try {
+    const { data, error } = await supabase.rpc("hybrid_search", {
+      query_embedding: `[${embedding.join(",")}]`,
+      query_text: expanded,
+      match_count: topK,
+      filter_gender: filters.gender ?? undefined,
+      filter_article_type: filters.articleType ?? undefined,
+      filter_colour: filters.colour ?? undefined,
+      filter_brand_tier: filters.brandTier ?? undefined,
+    });
 
-  if (error) throw error;
-  return (data ?? []) as Product[];
+    if (error) throw error;
+    return (data ?? []) as Product[];
+  } catch (rpcError) {
+    console.error(
+      "[Search Failsafe] Supabase hybrid_search RPC failed or timed out. Falling back to direct Postgrest query:",
+      rpcError,
+    );
+
+    const queryBuilder = supabase
+      .from("products")
+      .select("id, name, gender, article_type, colour, usage_type, image_url, brand_tier");
+
+    if (filters.gender) {
+      queryBuilder.eq("gender", filters.gender);
+    }
+    if (filters.articleType) {
+      queryBuilder.eq("article_type", filters.articleType);
+    }
+    if (filters.colour) {
+      queryBuilder.eq("colour", filters.colour);
+    }
+    if (filters.brandTier) {
+      queryBuilder.eq("brand_tier", filters.brandTier);
+    }
+
+    const { data: fallbackData, error: fallbackError } = await queryBuilder.limit(topK || 12);
+    if (fallbackError) {
+      console.error("[Search Failsafe] Direct Postgrest fallback also failed:", fallbackError);
+      throw fallbackError;
+    }
+
+    return (fallbackData ?? []).map((p: any) => ({
+      id: p.id,
+      name: p.name || "",
+      brand: p.brand || null,
+      brand_tier: p.brand_tier || null,
+      gender: p.gender || "",
+      article_type: p.article_type || "",
+      colour: p.colour || "",
+      usage_type: p.usage_type || "",
+      image_url: p.image_url || "",
+      semantic_score: 0.6,
+      keyword_score: 0.6,
+      final_score: 0.6,
+    })) as Product[];
+  }
 }

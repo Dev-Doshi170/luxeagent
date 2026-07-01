@@ -12,12 +12,14 @@
     "supabase:types": "npx supabase gen types typescript --project-id frluadnvvfvrqyiqislm --schema public > src/types/database.types.ts"
   },
   "dependencies": {
+    "@ai-sdk/google": "^4.0.3",
     "@ai-sdk/groq": "^3.0.39",
     "@ai-sdk/openai": "^3.0.67",
     "@ai-sdk/react": "^3.0.197",
     "@supabase/supabase-js": "^2.107.0",
     "ai": "^6.0.195",
     "next": "16.2.7",
+    "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^4.4.3"

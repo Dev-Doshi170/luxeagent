@@ -17,7 +17,7 @@
  */
 
 import type { Product } from "../types/product.ts";
-import { mapIntentGender } from "./hybrid-search";
+import { mapIntentGender } from "./hybrid-search.ts";
 import {
   classifyArticleType,
   type RankedProduct,

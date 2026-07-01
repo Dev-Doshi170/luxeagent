@@ -2,16 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getChatStepToolPolicy } from "./chatToolPolicy.ts";
 
-test("requires catalog search on the first chat step", () => {
-  assert.deepEqual(getChatStepToolPolicy(0), {
-    toolChoice: { type: "tool", toolName: "search_products" },
-    activeTools: ["search_products"],
-  });
-});
-
-test("disables tools after search results are available", () => {
-  assert.deepEqual(getChatStepToolPolicy(1), {
-    toolChoice: "none",
-    activeTools: [],
-  });
+test("allows all tools to be chosen dynamically at any step", () => {
+  const expectedPolicy = {
+    toolChoice: "auto",
+    activeTools: ["search_products", "check_inventory"],
+  };
+  assert.deepEqual(getChatStepToolPolicy(0), expectedPolicy);
+  assert.deepEqual(getChatStepToolPolicy(1), expectedPolicy);
 });

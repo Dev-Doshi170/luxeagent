@@ -8,7 +8,7 @@ export type ExperienceMode = "product-search" | "outfit-creator";
 
 const MODES: { id: ExperienceMode; href: string; label: string }[] = [
   { id: "product-search", href: "/product-search", label: "Product Search" },
-  { id: "outfit-creator", href: "/outfit-creator", label: "Outfit Creator" },
+  { id: "outfit-creator", href: "/outfit-creator", label: "LuxeAgent Chat" },
 ];
 
 type ExperienceShellProps = {

@@ -1,12 +1,12 @@
-import { createGroq } from "@ai-sdk/groq";
+import { google } from "@ai-sdk/google";
 import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
 import { getChatStepToolPolicy } from "@/lib/chatToolPolicy";
 import type { Product } from "@/types/product";
+import { getProductInventory } from "@/lib/inventory";
+import { createSearchClient } from "@/lib/hybrid-search";
 
-const groq = createGroq({ apiKey: process.env.GROQ_API_KEY });
-
-export const maxDuration = 30;
+export const maxDuration = 45;
 
 async function searchProducts(
   query: string,
@@ -14,11 +14,15 @@ async function searchProducts(
   gender?: string,
   articleType?: string,
 ): Promise<Product[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
   const params = new URLSearchParams({ q: query, top_k: String(topK) });
   if (gender) params.set("gender", gender);
   if (articleType) params.set("article_type", articleType);
+  
   const res = await fetch(`${baseUrl}/api/search?${params}`);
+  if (!res.ok) {
+    throw new Error(`Catalog search failed: ${res.statusText}`);
+  }
   const data = await res.json();
   return data.products || [];
 }
@@ -36,7 +40,7 @@ function formatProductsForModel(products: Product[]) {
       product.usage_type,
     ].filter(Boolean);
 
-    return `${index + 1}. ${product.name}${details.length ? ` (${details.join(", ")})` : ""}`;
+    return `${index + 1}. [ID: ${product.id}] ${product.name}${details.length ? ` (${details.join(", ")})` : ""}`;
   });
 
   return `Found ${products.length} matching products:\n${productLines.join("\n")}`;
@@ -45,17 +49,38 @@ function formatProductsForModel(products: Product[]) {
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
+  // Map Gemini API Key to standard Google environment variable
+  if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
+  }
+
+  // Create Google model and wrap it in a proxy to resolve version mismatch with older Vercel AI SDK core
+  const rawModel = google("gemini-2.5-flash");
+  const model = new Proxy(rawModel, {
+    get(target, prop) {
+      if (prop === "specificationVersion") {
+        return "v3";
+      }
+      return Reflect.get(target, prop);
+    },
+  });
+
   const result = streamText({
-    model: groq("llama-3.1-8b-instant"),
+    model: model as any,
     system: `You are LuxeAgent, an AI-powered luxury fashion concierge.
 You help users find the perfect outfit or fashion items from a curated catalog.
-When a user asks for fashion recommendations:
-1. Parse their intent — occasion, style, gender, color preferences
-2. Use the search_products tool to find relevant items
-3. Present results in a helpful, stylish way
-4. Suggest complete outfits when appropriate
-Always use the search_products tool before recommending items.
-The UI renders product cards automatically, so never echo raw product JSON, image URLs, IDs, or internal scores.`,
+
+Core Capabilities:
+1. Parse search requests: Detect gender, occasion, season, colors, and styles.
+2. Direct Search: Always call the 'search_products' tool to query the catalog before listing or recommending items.
+3. Multi-modal RAG: If the user provides an image (attachment), analyze it for visual properties (article type, color, pattern, style) and invoke the 'search_products' tool using those details.
+4. Check Inventory: If the user asks about sizes, stock levels, or clicks to check sizes for a product, invoke the 'check_inventory' tool with the product's database ID.
+5. Cart Guidance: Guide users to add items to their shopping bag. When they ask to add an item, instruct them to choose a size from the picker and add it.
+
+Rules:
+- Always use the 'search_products' tool before recommending items.
+- Provide luxury-grade styling advice. Combine products (tops, bottoms, footwear, accessories) into cohesive look recommendations.
+- Keep responses concise and stylish. Do not echo raw product JSON, image URLs, or internal database keys in your message text unless helpful. The UI will render product cards and carousels automatically.`,
     messages: await convertToModelMessages(messages),
     tools: {
       search_products: tool({
@@ -75,8 +100,34 @@ The UI renders product cards automatically, so never echo raw product JSON, imag
           value: formatProductsForModel(output.products),
         }),
       }),
+      check_inventory: tool({
+        description: "Check the real-time stock levels of a product in various sizes (S, M, L, XL) by its database ID.",
+        inputSchema: z.object({
+          productId: z.number().describe("The product ID to check inventory for."),
+        }),
+        execute: async ({ productId }) => {
+          const supabase = createSearchClient();
+          const { data: product } = await supabase
+            .from("products")
+            .select("name, brand")
+            .eq("id", productId)
+            .single();
+
+          const inventory = getProductInventory(productId);
+          return {
+            productId,
+            name: product?.name || "Product",
+            brand: product?.brand || "Curated",
+            sizes: inventory,
+          };
+        },
+        toModelOutput: ({ output }) => ({
+          type: "text",
+          value: `Inventory for ${output.name} (${output.brand}): S: ${output.sizes.S} in stock, M: ${output.sizes.M} in stock, L: ${output.sizes.L} in stock, XL: ${output.sizes.XL} in stock.`,
+        }),
+      }),
     },
-    stopWhen: stepCountIs(3),
+    stopWhen: stepCountIs(5),
     prepareStep: ({ stepNumber }) => getChatStepToolPolicy(stepNumber),
   });
 
