@@ -105,11 +105,20 @@ Rules:
         inputSchema: z.object({
           query: z.string().describe("Search query e.g. 'elegant blue dress for wedding'"),
           top_k: z.number().optional().default(6),
-          gender: z.enum(["Men", "Women", "Boys", "Girls", "Unisex"]).optional(),
+          gender: z.string().optional().describe("e.g. Men, Women, Boys, Girls, Unisex"),
           article_type: z.string().optional().describe("e.g. Shirts, Jeans, Dresses, Heels"),
         }),
         execute: async ({ query, top_k, gender, article_type }) => {
-          const products = await searchProducts(query, top_k, gender, article_type, headers);
+          let normalizedGender: string | undefined = undefined;
+          if (gender) {
+            const g = gender.toLowerCase();
+            if (g.includes("women")) normalizedGender = "Women";
+            else if (g.includes("men")) normalizedGender = "Men";
+            else if (g.includes("girl")) normalizedGender = "Girls";
+            else if (g.includes("boy")) normalizedGender = "Boys";
+            else if (g.includes("unisex")) normalizedGender = "Unisex";
+          }
+          const products = await searchProducts(query, top_k, normalizedGender, article_type, headers);
           return { products, count: products.length };
         },
         toModelOutput: ({ output }) => ({
@@ -120,19 +129,23 @@ Rules:
       check_inventory: tool({
         description: "Check the real-time stock levels of a product in various sizes (S, M, L, XL) by its database ID.",
         inputSchema: z.object({
-          productId: z.number().describe("The product ID to check inventory for."),
+          productId: z.union([z.number(), z.string()]).describe("The product ID to check inventory for."),
         }),
         execute: async ({ productId }) => {
+          const idNum = typeof productId === "number" ? productId : parseInt(productId, 10);
+          if (isNaN(idNum)) {
+            throw new Error(`Invalid product ID: ${productId}`);
+          }
           const supabase = createSearchClient();
           const { data: product } = await supabase
             .from("products")
             .select("name, brand")
-            .eq("id", productId)
+            .eq("id", idNum)
             .single();
 
-          const inventory = getProductInventory(productId);
+          const inventory = getProductInventory(idNum);
           return {
-            productId,
+            productId: idNum,
             name: product?.name || "Product",
             brand: product?.brand || "Curated",
             sizes: inventory,
