@@ -49,6 +49,49 @@ export async function getEmbedding(text: string): Promise<number[]> {
   return data.data[0].embedding as number[];
 }
 
+/**
+ * Generate image embeddings from the CLIP microservice.
+ * Accepts a base64 image data URL or a remote image URL.
+ */
+export async function getClipEmbedding(imageInput: string): Promise<number[]> {
+  const clipServiceUrl = process.env.CLIP_SERVICE_URL || "http://localhost:8001";
+  
+  let blob: Blob;
+  
+  if (imageInput.startsWith("data:")) {
+    const matches = imageInput.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      throw new Error("Invalid base64 image format");
+    }
+    const contentType = matches[1];
+    const base64Data = matches[2];
+    const buffer = Buffer.from(base64Data, "base64");
+    blob = new Blob([buffer], { type: contentType });
+  } else {
+    const res = await fetch(imageInput);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch image from URL: ${res.statusText}`);
+    }
+    blob = await res.blob();
+  }
+  
+  const formData = new FormData();
+  formData.append("file", blob, "image.jpg");
+  
+  const response = await fetch(`${clipServiceUrl}/embed`, {
+    method: "POST",
+    body: formData,
+  });
+  
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`CLIP service returned status ${response.status}: ${errText}`);
+  }
+  
+  const data = await response.json();
+  return data.embedding as number[];
+}
+
 /** Create a service-role Supabase client for server-side search. */
 export function createSearchClient(): SupabaseClient {
   return createClient(

@@ -252,6 +252,35 @@ function selectSlotAwareCandidates(
 }
 
 /**
+ * Deduplicate, classify, apply diversity boost, normalize scores, and rank products.
+ * Extracted into a shared utility function so visual search results can reuse the same pipeline logic.
+ */
+export function rankAndDiversify(
+  merged: RankedProduct[],
+  topK: number = DEFAULT_TOP_K,
+  slotAware: boolean = false,
+): RankedProduct[] {
+  // 4. Diversify into balanced outfit buckets.
+  applyDiversityBoost(merged);
+
+  // 5. Blend search relevance with diversity boost and sort.
+  const normalized = normalizeScores(merged);
+  for (const p of merged) {
+    const searchScore = normalized.get(p.id) ?? 0;
+    const diversity = p.diversity_boost ?? 0;
+    p.final_score =
+      SEARCH_SCORE_WEIGHT * searchScore + DIVERSITY_BOOST_WEIGHT * diversity;
+  }
+  merged.sort((a, b) => (b.final_score ?? 0) - (a.final_score ?? 0));
+
+  // 6. Final selection. Slot-aware keeps the top-N per outfit slot so no single
+  // category can crowd the shortlist; otherwise return the flat top-K.
+  return slotAware
+    ? selectSlotAwareCandidates(merged)
+    : merged.slice(0, topK);
+}
+
+/**
  * Orchestrate the full multi-search + merge + diversify + rank pipeline.
  * Returns the blended, sorted candidates plus debug counters. By default this is
  * a flat top-K; pass {@link OrchestrateOptions.slotAware} to instead keep the
@@ -286,24 +315,7 @@ export async function orchestrateRetrieval(
   const mergedCount = merged.length;
   logger.debug(`[QUL] merged ${hits.length} hits -> ${mergedCount} unique`);
 
-  // 4. Diversify into balanced outfit buckets.
-  applyDiversityBoost(merged);
-
-  // 5. Blend search relevance with diversity boost and sort.
-  const normalized = normalizeScores(merged);
-  for (const p of merged) {
-    const searchScore = normalized.get(p.id) ?? 0;
-    const diversity = p.diversity_boost ?? 0;
-    p.final_score =
-      SEARCH_SCORE_WEIGHT * searchScore + DIVERSITY_BOOST_WEIGHT * diversity;
-  }
-  merged.sort((a, b) => (b.final_score ?? 0) - (a.final_score ?? 0));
-
-  // 6. Final selection. Slot-aware keeps the top-N per outfit slot so no single
-  // category can crowd the shortlist; otherwise return the flat top-K.
-  const products = slotAware
-    ? selectSlotAwareCandidates(merged)
-    : merged.slice(0, topK);
+  const products = rankAndDiversify(merged, topK, slotAware);
 
   return {
     products,
@@ -311,3 +323,4 @@ export async function orchestrateRetrieval(
     mergedCount,
   };
 }
+
