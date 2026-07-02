@@ -1,7 +1,24 @@
+import fs from "fs";
+
+// Manually load env variables
+try {
+  const env = fs.readFileSync(".env", "utf-8");
+  for (const line of env.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const parts = trimmed.split("=");
+    if (parts.length >= 2) {
+      process.env[parts[0].trim()] = parts.slice(1).join("=").trim();
+    }
+  }
+} catch (e) {
+  console.error("Could not load .env file manually:", e.message);
+}
+
 async function main() {
   const apiKey = process.env.GEMINI_API_KEY;
   console.log("Testing Gemini connection with key length:", apiKey ? apiKey.length : 0);
-  console.log("Key prefix:", apiKey ? apiKey.slice(0, 5) : "");
+  console.log("Key prefix:", apiKey ? apiKey.slice(0, 10) : "");
   
   const model = "gemini-2.5-flash";
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;

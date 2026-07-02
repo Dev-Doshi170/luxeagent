@@ -1,10 +1,51 @@
-import { groq } from "@ai-sdk/groq";
+import { google } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
 import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
 import { getChatStepToolPolicy } from "@/lib/chatToolPolicy";
 import type { Product } from "@/types/product";
 import { getProductInventory } from "@/lib/inventory";
 import { createSearchClient } from "@/lib/hybrid-search";
+import { isGeminiCircuitOpen } from "@/lib/query-parser";
+
+/**
+ * Gemini model for the chat response. Uses a DIFFERENT model from the query
+ * parser (`gemini-2.5-flash`) so their free-tier quotas (20 RPD each) don't
+ * compete. Configurable via GEMINI_CHAT_MODEL env var.
+ */
+const CHAT_GEMINI_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.0-flash";
+
+/**
+ * Pick the best available chat model.
+ * Prefers Gemini but falls back to Groq (Llama) when:
+ *   - the Gemini key is missing / invalid
+ *   - the Gemini circuit breaker is open (post-429 cooldown)
+ *   - or FORCE_GROQ is set (useful for testing)
+ */
+function getChatModel() {
+  const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY;
+  const forceGroq = process.env.FORCE_GROQ === "true";
+
+  // Use Gemini if the key is valid AND the circuit breaker is closed
+  if (!forceGroq && geminiKey && !geminiKey.includes("...") && !isGeminiCircuitOpen()) {
+    return { model: google(CHAT_GEMINI_MODEL) as any, provider: `gemini(${CHAT_GEMINI_MODEL})` };
+  }
+
+  if (groqKey) {
+    const groq = createGroq({ apiKey: groqKey });
+    return { model: groq("llama-3.3-70b-versatile") as any, provider: "groq" };
+  }
+
+  // Last resort: try Gemini even if circuit is open (may work after cooldown)
+  if (geminiKey && !geminiKey.includes("...")) {
+    return { model: google(CHAT_GEMINI_MODEL) as any, provider: `gemini-fallback(${CHAT_GEMINI_MODEL})` };
+  }
+
+  throw new Error(
+    "No AI model available. Set GEMINI_API_KEY or GROQ_API_KEY in your environment.",
+  );
+}
 
 export const maxDuration = 45;
 
@@ -126,19 +167,17 @@ export async function POST(req: Request) {
     }
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    throw new Error("GROQ_API_KEY is not set in your Vercel Environment Variables. Please add it and redeploy.");
-  }
-  if (apiKey.includes("...")) {
-    throw new Error("Invalid GROQ_API_KEY: It looks like the masked key (containing '...') was copied from the Groq console. Please generate a new key and copy the full key immediately upon creation.");
+  // Map GEMINI_API_KEY to GOOGLE_GENERATIVE_AI_API_KEY if needed
+  if (process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
   }
 
-  // Create Groq model
-  const model = groq("llama-3.3-70b-versatile");
+  // Pick the best available model (Gemini → Groq fallback)
+  const { model, provider } = getChatModel();
+  console.log(`[Chat] Using ${provider} model`);
 
   const result = streamText({
-    model: model as any,
+    model,
     system: `You are LuxeAgent, an AI-powered luxury fashion concierge.
 You help users find the perfect outfit or fashion items from a curated catalog.
 
@@ -227,7 +266,7 @@ Rules:
       check_inventory: tool({
         description: "Check the real-time stock levels of a product in various sizes (S, M, L, XL) by its database ID.",
         inputSchema: z.object({
-          productId: z.union([z.number(), z.string()]).describe("The product ID to check inventory for."),
+          productId: z.number().describe("The product ID to check inventory for."),
         }),
         execute: async ({ productId }) => {
           const idNum = typeof productId === "number" ? productId : parseInt(productId, 10);

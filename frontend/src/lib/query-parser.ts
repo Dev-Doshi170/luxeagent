@@ -443,7 +443,7 @@ async function geminiParseOnce(
   query: string,
   apiKey: string,
 ): Promise<QueryIntent> {
-  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  const model = process.env.GEMINI_MODEL ?? "gemini-2.0-flash-lite";
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const prompt = [
