@@ -184,7 +184,7 @@ function MessageContent({ message, onCheckSizes, onAddToBag }: { message: UIMess
             .slice(0, index)
             .some(
               (previousPart) =>
-                (previousPart.type === "tool-search_products" || previousPart.type === "tool-check_inventory") &&
+                (previousPart.type === "tool-search_products" || previousPart.type === "tool-search_products_by_image" || previousPart.type === "tool-check_inventory") &&
                 (previousPart as { state?: string }).state === "output-available",
             );
 
@@ -252,6 +252,51 @@ function MessageContent({ message, onCheckSizes, onAddToBag }: { message: UIMess
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
               Curating our collection matching your request...
+            </div>
+          );
+        }
+
+        if (part.type === "tool-search_products_by_image") {
+          const toolPart = part as {
+            state?: string;
+            output?: unknown;
+            errorText?: string;
+          };
+
+          if (toolPart.state === "output-available") {
+            const output = toolPart.output as SearchProductsOutput;
+            const products = output.products ?? [];
+
+            return (
+              <div key={`${message.id}-products-visual-${index}`} className="min-w-0 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-[#C9A84C]">
+                  <span className="h-px flex-1 bg-[#C9A84C]/30" />
+                  Curated Visual Recommendations
+                  <span className="h-px flex-1 bg-[#C9A84C]/30" />
+                </div>
+                <ProductCarousel products={products} onCheckSizes={onCheckSizes} />
+              </div>
+            );
+          }
+
+          if (toolPart.state === "output-error") {
+            return (
+              <p key={`${message.id}-tool-error-visual-${index}`} className="text-sm text-red-200">
+                {toolPart.errorText || "The visual product search failed. Please try again."}
+              </p>
+            );
+          }
+
+          return (
+            <div
+              key={`${message.id}-tool-loading-visual-${index}`}
+              className="flex items-center gap-2.5 rounded-2xl border border-[#C9A84C]/20 bg-[#C9A84C]/10 px-4 py-3 text-sm text-[#F3D884]"
+            >
+              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Curating visual matches matching your request...
             </div>
           );
         }

@@ -139,30 +139,77 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ---- Legacy single-search fallback (unchanged behavior) ---------------
+    // ---- Legacy single-search fallback ------------------------------------
     console.log("[QUL] fallback reason:", fallbackReason ?? "(none)");
     const expandedQuery = expandQuery(query);
-    const embedding = await getEmbedding(expandedQuery);
 
-    const { data, error } = await supabase.rpc("hybrid_search", {
-      query_embedding: `[${embedding.join(",")}]`,
-      query_text: expandedQuery,
-      match_count: topK,
-      filter_gender: gender ?? undefined,
-      filter_article_type: articleType ?? undefined,
-      filter_colour: colour ?? undefined,
-      filter_brand_tier: resolveBrandTier(intent?.style) ?? undefined,
-    });
+    let legacyProducts: any[] = [];
 
-    if (error) throw error;
+    try {
+      const embedding = await getEmbedding(expandedQuery);
+
+      const { data, error } = await supabase.rpc("hybrid_search", {
+        query_embedding: `[${embedding.join(",")}]`,
+        query_text: expandedQuery,
+        match_count: topK,
+        filter_gender: gender ?? undefined,
+        filter_article_type: articleType ?? undefined,
+        filter_colour: colour ?? undefined,
+        filter_brand_tier: resolveBrandTier(intent?.style) ?? undefined,
+      });
+
+      if (error) throw error;
+      legacyProducts = data || [];
+    } catch (embeddingError) {
+      // Voyage / embedding is down — degrade to a direct text query so
+      // the user still gets results instead of a 500.
+      console.warn(
+        "[QUL] Legacy embedding/RPC failed; falling back to direct DB query:",
+        embeddingError instanceof Error ? embeddingError.message : embeddingError,
+      );
+
+      const queryBuilder = supabase
+        .from("products")
+        .select("id, name, gender, article_type, colour, usage_type, image_url, brand, brand_tier, embedding_text")
+        .textSearch("embedding_text", expandedQuery.split(/\s+/).join(" & "), { type: "plain" });
+
+      if (gender) queryBuilder.eq("gender", gender);
+      if (articleType) queryBuilder.eq("article_type", articleType);
+      if (colour) queryBuilder.eq("colour", colour);
+      const tierFilter = resolveBrandTier(intent?.style);
+      if (tierFilter) queryBuilder.eq("brand_tier", tierFilter);
+
+      const { data: directData, error: directError } = await queryBuilder.limit(topK * 3);
+
+      if (directError) {
+        console.warn("[QUL] Direct text query also failed:", directError);
+        // Last resort: simple ilike search
+        const fallbackBuilder = supabase
+          .from("products")
+          .select("id, name, gender, article_type, colour, usage_type, image_url, brand, brand_tier, embedding_text")
+          .or(
+            query.split(/\s+/).map(w => `name.ilike.%${w}%`).join(",")
+          );
+        if (gender) fallbackBuilder.eq("gender", gender);
+        if (articleType) fallbackBuilder.eq("article_type", articleType);
+
+        const { data: ilikeFallback } = await fallbackBuilder.limit(topK * 3);
+        legacyProducts = ilikeFallback || [];
+      } else {
+        legacyProducts = directData || [];
+      }
+
+      // Trim to topK (no semantic scoring available, just return first N)
+      legacyProducts = legacyProducts.slice(0, topK);
+    }
 
     return NextResponse.json({
       query,
-      strategy: "legacy",
+      strategy: "legacy-text-only",
       expanded_query: expandedQuery,
-      fallback_reason: fallbackReason,
-      total: data?.length || 0,
-      products: data || [],
+      fallback_reason: fallbackReason ?? "embedding service unavailable",
+      total: legacyProducts.length,
+      products: legacyProducts,
     });
   } catch (err: unknown) {
     console.error("Search error:", err);
