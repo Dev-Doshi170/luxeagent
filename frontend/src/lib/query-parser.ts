@@ -325,7 +325,7 @@ export class GeminiCircuitOpenError extends Error {
  */
 export const GEMINI_CIRCUIT_COOLDOWN_MS = Math.max(
   60 * 1000,
-  Number(process.env.GEMINI_CIRCUIT_COOLDOWN_MS) || 60 * 60 * 1000,
+  Number(process.env.GEMINI_CIRCUIT_COOLDOWN_MS) || 60 * 1000,
 );
 
 let geminiCircuitOpenUntil = 0;
@@ -340,7 +340,7 @@ export function geminiCircuitCooldownRemainingMs(): number {
   return Math.max(0, geminiCircuitOpenUntil - Date.now());
 }
 
-function openGeminiCircuit(reason: string): void {
+export function openGeminiCircuit(reason: string): void {
   geminiCircuitOpenUntil = Date.now() + GEMINI_CIRCUIT_COOLDOWN_MS;
   const minutes = Math.round(GEMINI_CIRCUIT_COOLDOWN_MS / 60000);
   console.warn(
@@ -443,7 +443,7 @@ async function geminiParseOnce(
   query: string,
   apiKey: string,
 ): Promise<QueryIntent> {
-  const model = process.env.GEMINI_MODEL ?? "gemini-2.0-flash-lite";
+  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const prompt = [

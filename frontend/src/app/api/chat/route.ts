@@ -6,14 +6,173 @@ import { getChatStepToolPolicy } from "@/lib/chatToolPolicy";
 import type { Product } from "@/types/product";
 import { getProductInventory } from "@/lib/inventory";
 import { createSearchClient } from "@/lib/hybrid-search";
-import { isGeminiCircuitOpen } from "@/lib/query-parser";
+import { isGeminiCircuitOpen, openGeminiCircuit } from "@/lib/query-parser";
 
 /**
  * Gemini model for the chat response. Uses a DIFFERENT model from the query
  * parser (`gemini-2.5-flash`) so their free-tier quotas (20 RPD each) don't
  * compete. Configurable via GEMINI_CHAT_MODEL env var.
  */
-const CHAT_GEMINI_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.0-flash";
+const CHAT_GEMINI_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.5-flash";
+
+let lastSuccessfulGeminiCall = 0;
+const GEMINI_HEALTH_CACHE_MS = 60 * 1000; // 1 minute
+
+async function checkGeminiHealth(apiKey: string): Promise<boolean> {
+  const modelName = process.env.GEMINI_CHAT_MODEL || "gemini-2.5-flash";
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+  
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "h" }] }],
+        generationConfig: {
+          maxOutputTokens: 1,
+        },
+      }),
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeout);
+    
+    if (response.status === 429) {
+      console.warn("[Chat] Gemini health check failed with 429 (rate limit/quota exceeded)");
+      return false;
+    }
+    
+    if (!response.ok) {
+      console.warn(`[Chat] Gemini health check failed with status ${response.status}`);
+      return false;
+    }
+    
+    return true;
+  } catch (err) {
+    console.error("[Chat] Gemini health check encountered an error:", err);
+    return false;
+  }
+}
+
+let isGroqHealthy: boolean | null = null;
+
+async function checkGroqHealth(apiKey: string): Promise<boolean> {
+  const endpoint = "https://api.groq.com/openai/v1/chat/completions";
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: "h" }],
+        max_tokens: 1,
+      }),
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeout);
+    
+    if (response.status === 401) {
+      console.warn("[Chat] Groq health check failed with 401 (Invalid API Key)");
+      return false;
+    }
+    
+    return response.ok;
+  } catch (err) {
+    console.error("[Chat] Groq health check encountered an error:", err);
+    return false;
+  }
+}
+
+const mockModel: any = {
+  specificationVersion: "v1" as const,
+  provider: "mock",
+  modelId: "mock-concierge",
+  doGenerate: async () => {
+    return {
+      text: "Offline Concierge Mode: Both Gemini and Groq API keys are currently rate-limited or invalid. Direct catalog search and inventory verification are still fully functional.",
+      finishReason: "stop" as const,
+      usage: { promptTokens: 0, completionTokens: 0 },
+    };
+  },
+  doStream: async (options: any) => {
+    const messages = options.prompt || [];
+    const lastMessage = messages[messages.length - 1];
+    
+    const stream = new ReadableStream<any>({
+      async start(controller) {
+        if (lastMessage?.role === 'tool') {
+          // Tool results returned, write a response summarizing it
+          const toolContent = lastMessage.content?.[0];
+          let responseText = "";
+          
+          if (toolContent?.toolName === 'search_products') {
+            responseText = "\n\nI have fetched these luxury recommendations from our database. Feel free to inspect their details and select 'Verify Stock & Size' to check size availability.";
+          } else if (toolContent?.toolName === 'check_inventory') {
+            responseText = "\n\nStock levels for this item are displayed above. Please choose a size to add to your bag.";
+          } else {
+            responseText = "\n\nHere are the results. Let me know if you'd like to refine your search or look at other options!";
+          }
+          
+          controller.enqueue({ type: 'text-delta', textDelta: responseText });
+        } else {
+          // User's message
+          const userText = lastMessage?.content?.[0]?.text || "";
+          const queryLower = userText.toLowerCase();
+          
+          const introText = "Offline Concierge Mode:\n(Both Gemini and Groq API keys are rate-limited/invalid. Direct catalog search and inventory checks are still fully functional)\n\n";
+          controller.enqueue({ type: 'text-delta', textDelta: introText });
+          
+          const searchKeywords = ["shirt", "t-shirt", "kurta", "suit", "blazer", "jacket", "trousers", "chinos", "jeans", "shorts", "dress", "gown", "skirt", "saree", "shoes", "loafers", "sneakers", "heels", "casual", "formal", "wedding", "party", "outfit", "look", "wear", "dress"];
+          const isSearch = searchKeywords.some(keyword => queryLower.includes(keyword)) || queryLower.includes("find") || queryLower.includes("show me") || queryLower.includes("search");
+          const isCheckSizes = queryLower.includes("check stock") || queryLower.includes("check size") || queryLower.includes("check inventory") || (queryLower.includes("id:") && queryLower.includes("size"));
+          
+          if (isSearch) {
+            controller.enqueue({ type: 'text-delta', textDelta: `Searching catalog database for: "${userText}"...` });
+            controller.enqueue({
+              type: 'tool-call',
+              toolCallType: 'function',
+              toolCallId: 'call_' + Math.random().toString(36).substring(7),
+              toolName: 'search_products',
+              args: JSON.stringify({ query: userText }),
+            });
+          } else if (isCheckSizes) {
+            const idMatch = queryLower.match(/id:\s*(\d+)/) || queryLower.match(/\b(\d+)\b/);
+            const productId = idMatch ? parseInt(idMatch[1], 10) : 1;
+            controller.enqueue({ type: 'text-delta', textDelta: `Checking live inventory for Product ID: ${productId}...` });
+            controller.enqueue({
+              type: 'tool-call',
+              toolCallType: 'function',
+              toolCallId: 'call_' + Math.random().toString(36).substring(7),
+              toolName: 'check_inventory',
+              args: JSON.stringify({ productId }),
+            });
+          } else {
+            const genericReply = "I am your luxury fashion concierge. You can ask me to search for outfits (e.g. 'smart casual shirts for office party') or check stock for a specific garment ID. Since I'm running locally, I will query the supabase catalog directly for you!";
+            controller.enqueue({ type: 'text-delta', textDelta: genericReply });
+          }
+        }
+        
+        controller.enqueue({ type: 'finish', finishReason: 'stop', usage: { promptTokens: 0, completionTokens: 0 } });
+        controller.close();
+      }
+    });
+    
+    return { stream };
+  }
+};
 
 /**
  * Pick the best available chat model.
@@ -22,29 +181,50 @@ const CHAT_GEMINI_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.0-flash";
  *   - the Gemini circuit breaker is open (post-429 cooldown)
  *   - or FORCE_GROQ is set (useful for testing)
  */
-function getChatModel() {
+async function getChatModel() {
   const geminiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY;
   const groqKey = process.env.GROQ_API_KEY;
   const forceGroq = process.env.FORCE_GROQ === "true";
 
+  let canUseGemini = !forceGroq && !!geminiKey && !geminiKey.includes("...") && !isGeminiCircuitOpen();
+
+  if (canUseGemini && geminiKey) {
+    const now = Date.now();
+    if (now - lastSuccessfulGeminiCall > GEMINI_HEALTH_CACHE_MS) {
+      console.log("[Chat] Performing pre-flight health check on Gemini model...");
+      const isHealthy = await checkGeminiHealth(geminiKey);
+      if (isHealthy) {
+        lastSuccessfulGeminiCall = now;
+      } else {
+        openGeminiCircuit("Gemini pre-flight health check failed");
+        canUseGemini = false;
+      }
+    }
+  }
+
   // Use Gemini if the key is valid AND the circuit breaker is closed
-  if (!forceGroq && geminiKey && !geminiKey.includes("...") && !isGeminiCircuitOpen()) {
+  if (canUseGemini && geminiKey) {
     return { model: google(CHAT_GEMINI_MODEL) as any, provider: `gemini(${CHAT_GEMINI_MODEL})` };
   }
 
-  if (groqKey) {
+  // Check Groq key health
+  let canUseGroq = !!groqKey && !groqKey.includes("...");
+  if (canUseGroq && groqKey) {
+    if (isGroqHealthy === null) {
+      console.log("[Chat] Performing pre-flight health check on Groq model...");
+      isGroqHealthy = await checkGroqHealth(groqKey);
+    }
+    canUseGroq = isGroqHealthy;
+  }
+
+  if (canUseGroq && groqKey) {
     const groq = createGroq({ apiKey: groqKey });
-    return { model: groq("llama-3.3-70b-versatile") as any, provider: "groq" };
+    return { model: groq("llama-3.1-8b-instant") as any, provider: "groq" };
   }
 
-  // Last resort: try Gemini even if circuit is open (may work after cooldown)
-  if (geminiKey && !geminiKey.includes("...")) {
-    return { model: google(CHAT_GEMINI_MODEL) as any, provider: `gemini-fallback(${CHAT_GEMINI_MODEL})` };
-  }
-
-  throw new Error(
-    "No AI model available. Set GEMINI_API_KEY or GROQ_API_KEY in your environment.",
-  );
+  // If both failed, return the offline mock model
+  console.log("[Chat] Both Gemini and Groq models are unavailable. Using local offline mock concierge model.");
+  return { model: mockModel, provider: "mock" };
 }
 
 export const maxDuration = 45;
@@ -55,9 +235,10 @@ async function searchProducts(
   gender?: string,
   articleType?: string,
   headers?: Record<string, string>,
+  baseUrlInput?: string,
 ): Promise<Product[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL 
-    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3002");
+  const baseUrl = baseUrlInput || process.env.NEXT_PUBLIC_APP_URL 
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
   const params = new URLSearchParams({ q: query, top_k: String(topK) });
   if (gender) params.set("gender", gender);
   if (articleType) params.set("article_type", articleType);
@@ -82,9 +263,10 @@ async function searchProductsByImage(
   gender?: string,
   articleType?: string,
   headers?: Record<string, string>,
+  baseUrlInput?: string,
 ): Promise<Product[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL 
-    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3002");
+  const baseUrl = baseUrlInput || process.env.NEXT_PUBLIC_APP_URL 
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
   
   const formData = new FormData();
   
@@ -152,6 +334,17 @@ function formatProductsForModel(products: Product[]) {
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
+  if (!messages || !Array.isArray(messages)) {
+    return new Response(JSON.stringify({ error: "Invalid or missing messages" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const host = req.headers.get("host") || "localhost:3000";
+  const protocol = req.headers.get("x-forwarded-proto") || "http";
+  const requestBaseUrl = `${protocol}://${host}`;
+
   // Forward authorization/cookie headers for internal fetches to bypass Vercel's preview protection if enabled.
   const headers: Record<string, string> = {};
   const forwardHeaders = [
@@ -173,26 +366,36 @@ export async function POST(req: Request) {
   }
 
   // Pick the best available model (Gemini → Groq fallback)
-  const { model, provider } = getChatModel();
+  const { model, provider } = await getChatModel();
   console.log(`[Chat] Using ${provider} model`);
+
+  // Sanitize messages: ensure every message has a 'parts' array as expected by convertToModelMessages in ai sdk.
+  const sanitizedMessages = (messages as any[]).map((msg) => {
+    if (!msg.parts) {
+      return {
+        ...msg,
+        parts: [{ type: "text" as const, text: msg.content || "" }],
+      };
+    }
+    return msg;
+  });
 
   const result = streamText({
     model,
     system: `You are LuxeAgent, an AI-powered luxury fashion concierge.
-You help users find the perfect outfit or fashion items from a curated catalog.
+You help users find the perfect outfits and fashion items from a curated luxury catalog.
 
-Core Capabilities:
-1. Parse search requests: Detect gender, occasion, season, colors, and styles.
-2. Direct Search: Call the 'search_products' tool to query the catalog for text-only searches before recommending items.
-3. Multi-modal RAG: If the user uploads/shares a photo, invoke the 'search_products_by_image' tool. If they also specify text instructions along with the photo (e.g. "something like this but in blue"), pass the text in the 'query' argument of 'search_products_by_image' to perform fused search.
-4. Check Inventory: If the user asks about sizes, stock levels, or clicks to check sizes for a product, invoke the 'check_inventory' tool with the product's database ID.
-5. Cart Guidance: Guide users to add items to their shopping bag. When they ask to add an item, instruct them to choose a size from the picker and add it.
+Core Logic:
+1. When a user describes a look, occasion, style, or uploads a photo, always query the catalog database using your search tools first before suggesting any items.
+2. When a user asks about sizes, stock levels, or clicks to check sizes for a product, query the live boutique stock using your inventory checking tool first.
+3. Guide users to add items to their shopping bag. When they ask to add an item, instruct them to choose a size from the picker and add it.
 
-Rules:
-- Always use 'search_products' (for text queries) or 'search_products_by_image' (when an image is provided) before recommending items.
+Styling & Tone Rules:
 - Provide luxury-grade styling advice. Combine products (tops, bottoms, footwear, accessories) into cohesive look recommendations.
-- Keep responses concise and stylish. Do not echo raw product JSON, image URLs, or internal database keys in your message text unless helpful. The UI will render product cards and carousels automatically.`,
-    messages: await convertToModelMessages(messages),
+- Keep responses concise and stylish.
+- Do NOT output any XML tags like <function=...> or </function> in your response. Let the API handle tool execution natively.
+- Do NOT echo raw product JSON, image URLs, or internal database keys in your message text unless helpful. The UI will render product cards and carousels automatically.`,
+    messages: await convertToModelMessages(sanitizedMessages as any),
     tools: {
       search_products: tool({
         description: "Search the fashion catalog for products matching a text query.",
@@ -212,7 +415,7 @@ Rules:
             else if (g.includes("boy")) normalizedGender = "Boys";
             else if (g.includes("unisex")) normalizedGender = "Unisex";
           }
-          const products = await searchProducts(query, top_k, normalizedGender, article_type, headers);
+          const products = await searchProducts(query, top_k, normalizedGender, article_type, headers, requestBaseUrl);
           return { products, count: products.length };
         },
         toModelOutput: ({ output }) => ({
@@ -255,7 +458,7 @@ Rules:
             else if (g.includes("unisex")) normalizedGender = "Unisex";
           }
 
-          const products = await searchProductsByImage(targetImageUrl, query, top_k, normalizedGender, article_type, headers);
+          const products = await searchProductsByImage(targetImageUrl, query, top_k, normalizedGender, article_type, headers, requestBaseUrl);
           return { products, count: products.length };
         },
         toModelOutput: ({ output }) => ({
@@ -294,9 +497,21 @@ Rules:
         }),
       }),
     },
+    onError: ({ error }) => {
+      console.error("[Chat] Stream error:", error);
+      if (provider.startsWith("gemini")) {
+        openGeminiCircuit(`Chat stream error: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
     stopWhen: stepCountIs(5),
     prepareStep: ({ stepNumber }) => getChatStepToolPolicy(stepNumber),
   });
 
-  return result.toUIMessageStreamResponse();
+  return result.toUIMessageStreamResponse({
+    onFinish: () => {
+      if (provider.startsWith("gemini")) {
+        lastSuccessfulGeminiCall = Date.now();
+      }
+    }
+  });
 }

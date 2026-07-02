@@ -218,16 +218,16 @@ export async function runHybridSearch(
       .select("id, name, gender, article_type, colour, usage_type, image_url, brand, brand_tier, embedding_text");
 
     if (filters.gender) {
-      queryBuilder.eq("gender", filters.gender);
+      queryBuilder.ilike("gender", filters.gender);
     }
     if (filters.articleType) {
-      queryBuilder.eq("article_type", filters.articleType);
+      queryBuilder.ilike("article_type", filters.articleType);
     }
     if (filters.colour) {
-      queryBuilder.eq("colour", filters.colour);
+      queryBuilder.ilike("colour", filters.colour);
     }
     if (filters.brandTier) {
-      queryBuilder.eq("brand_tier", filters.brandTier);
+      queryBuilder.ilike("brand_tier", filters.brandTier);
     }
 
     const { data: fallbackData, error: fallbackError } = await queryBuilder.limit(candidateLimit);
